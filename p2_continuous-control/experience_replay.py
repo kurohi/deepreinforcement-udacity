@@ -1,3 +1,4 @@
+import numpy as np
 from collections import deque
 
 '''
@@ -10,6 +11,9 @@ class ExperienceReplay(object):
         self.buffer_size = buffer_size
         self.full = False
         self.index = 0
+
+    def add(self, experience):
+        self.buffer.append(experience)
 
     def sample(self):
         index = np.random.randint(0, len(self.buffer))
