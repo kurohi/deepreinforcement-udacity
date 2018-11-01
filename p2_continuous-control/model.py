@@ -33,46 +33,19 @@ class ActorCritic(nn.Module):
         else:
             self.fc_common = None
 
-        #declaration of the actor and critic sequences
-        sequence_dict_actor = OrderedDict()
-        sequence_dict_critic = OrderedDict()
-
-        #if common layers are set, then the actor uses the last common layer as input size
-        #if it is not set, then uses the state size as input
-        if(self.fc_common == None):
-            sequence_dict_actor['fc0'] = nn.Linear(state_size, actor_fc_sizes[0])
+        if(self.fc_common != None):
+            self.actor = Actor(fc_sizes[-1], action_size, actor_fc_sizes)
+            self.critic = Critic(fc_sizes[-1], action_size, critic_fc_sizes)
         else:
-            sequence_dict_actor['fc0'] = nn.Linear(fc_sizes[-1], actor_fc_sizes[0])
-        sequence_dict_actor['fc_rrelu0'] = nn.RReLU()
-        for i,actor_fc_size in enumerate(actor_fc_sizes):
-            if(i == len(actor_fc_sizes)-1):
-                break
-            sequence_dict_actor['fc{}'.format(i+1)] = nn.Linear(actor_fc_size, actor_fc_sizes[i+1])
-            sequence_dict_actor['fc_rrelu{}'.format(i+1)] = nn.RReLU()
-        sequence_dict_actor['logit'] = nn.Linear(actor_fc_sizes[-1], action_size)
-        self.fc_actor = nn.Sequential(sequence_dict_actor)
-
-        #same as the actor, the critic input layer is dependent of the common layer existence
-        if(self.fc_common == None):
-            sequence_dict_critic['fc0'] = nn.Linear(state_size, critic_fc_sizes[0])
-        else:
-            sequence_dict_critic['fc0'] = nn.Linear(fc_sizes[-1], critic_fc_sizes[0])
-        sequence_dict_critic['fc_rrelu0'] = nn.RReLU()
-        for i,critic_fc_size in enumerate(critic_fc_sizes):
-            if(i == len(critic_fc_sizes)-1):
-                break
-            sequence_dict_critic['fc{}'.format(i+1)] = nn.Linear(critic_fc_size, critic_fc_sizes[i+1])
-            sequence_dict_critic['fc_rrelu{}'.format(i+1)] = nn.RReLU()
-        sequence_dict_critic['logit'] = nn.Linear(critic_fc_sizes[-1], 1)
-        self.fc_critic = nn.Sequential(sequence_dict_critic)
-
-        self.tanh = nn.Tanh()
+            self.actor = Actor(state_size, action_size, actor_fc_sizes)
+            self.critic = Critic(state_size, action_size, critic_fc_sizes)
 
         #weight initialization using xavier initializer
         if(self.fc_common != None):
             self.fc_common.apply(ActorCritic.init_weights)
-        self.fc_actor.apply(ActorCritic.init_weights)
-        self.fc_critic.apply(ActorCritic.init_weights)
+        self.critic.critic_first_layer.apply(ActorCritic.init_weights)
+        self.actor.fc_actor.apply(ActorCritic.init_weights)
+        self.critic.fc_critic.apply(ActorCritic.init_weights)
         self.std = nn.Parameter(torch.ones(1, action_size))
 
     #the forward function is also dependent of the existence of the common layer
@@ -82,18 +55,66 @@ class ActorCritic(nn.Module):
             common_res = self.fc_common(state)
         else:
             common_res = state
-        actor_res = self.fc_actor(common_res)
-        mean = self.tanh(actor_res)
-        dist = torch.distributions.Normal(mean, self.std)
-        action = dist.sample()
-        log_actor = dist.log_prob(action)
-        log_actor = torch.sum(log_actor, dim=1, keepdim=True)
 
-        value = self.fc_critic(common_res)
-        return  log_actor, action, value
+        action = self.actor(common_res)
+        value = self.critic(common_res, action)
+        return  action, value
 
     #xavier initializer
     def init_weights(m):
         if type(m) == nn.Linear:
             torch.nn.init.xavier_uniform_(m.weight)
             m.bias.data.fill_(0.01)
+
+class Actor(nn.Module):
+    def __init__(self, state_size, action_size, actor_fc_sizes=[256,128,64]):
+        super(Actor, self).__init__()
+
+        #declaration of the actor sequences
+        sequence_dict_actor = OrderedDict()
+
+        sequence_dict_actor['fc0'] = nn.Linear(state_size, actor_fc_sizes[0])
+        sequence_dict_actor['fc_rrelu0'] = nn.RReLU()
+        for i,actor_fc_size in enumerate(actor_fc_sizes):
+            if(i == len(actor_fc_sizes)-1):
+                break
+            sequence_dict_actor['fc{}'.format(i+1)] = nn.Linear(actor_fc_size, actor_fc_sizes[i+1])
+            sequence_dict_actor['fc_rrelu{}'.format(i+1)] = nn.RReLU()
+        sequence_dict_actor['logit'] = nn.Linear(actor_fc_sizes[-1], action_size)
+        self.fc_actor = nn.Sequential(sequence_dict_actor)
+        self.tanh = nn.Tanh()
+
+
+    def forward(self, common_res):
+        actor_res = self.fc_actor(common_res)
+        action = self.tanh(actor_res)
+        #dist = torch.distributions.Normal(action, self.std)
+        #action = dist.sample()
+        #log_actor = dist.log_prob(action)
+        #log_actor = torch.sum(log_actor, dim=1, keepdim=True)
+        return action
+
+class Critic(nn.Module):
+    def __init__(self, state_size, action_size, critic_fc_sizes=[256,128,64]):
+        super(Critic, self).__init__()
+
+        #declaration of critic sequences
+        sequence_dict_critic = OrderedDict()
+
+        self.critic_first_layer = nn.Linear(state_size, critic_fc_sizes[0])
+        sequence_dict_critic['fc0'] = nn.Linear(critic_fc_sizes[0]+action_size, critic_fc_sizes[0])
+        sequence_dict_critic['fc_rrelu0'] = nn.RReLU()
+        for i,critic_fc_size in enumerate(critic_fc_sizes):
+            if(i == len(critic_fc_sizes)-1):
+                break
+            sequence_dict_critic['fc{}'.format(i+1)] = nn.Linear(critic_fc_size, critic_fc_sizes[i+1])
+            sequence_dict_critic['fc_rrelu{}'.format(i+1)] = nn.RReLU()
+        sequence_dict_critic['logit'] = nn.Linear(critic_fc_sizes[-1], 1)
+        self.fc_critic = nn.Sequential(sequence_dict_critic)
+
+    def forward(self, common_res, action):
+        common_res = self.critic_first_layer(common_res)
+        common_res = nn.RReLU(common_res)
+        common_res = torch.cat((common_res.lower, action), dim=0)
+        value = self.fc_critic(common_res)
+        return value

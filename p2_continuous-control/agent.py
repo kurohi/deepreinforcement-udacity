@@ -30,7 +30,8 @@ class Agent(object):
                                     fc_sizes=fc_sizes,
                                     actor_fc_sizes=actor_fc_sizes,
                                     critic_fc_sizes=critic_fc_sizes).to(self.device)
-        self.optimizer = torch.optim.Adam(self.ac_local.parameters(), lr=lr)
+        self.optimizer_actor = torch.optim.Adam(self.ac_local.actor.parameters(), lr=lr)
+        self.optimizer_critic = torch.optim.Adam(self.ac_local.critic.parameters(), lr=lr)
 
         # Noise process
         self.noise = OUNoise(action_size, random_seed)
@@ -42,36 +43,45 @@ class Agent(object):
 
 
     def act(self, state, add_noise=True):
+        self.ac_local.eval()
         with torch.no_grad():
-            _, action, value = self.ac_target(state)
+            action = self.ac_local.actor(state)
         self.ac_local.train()
         action = action.cpu().data.numpy()
         if(add_noise):
             action += self.noise.sample()
-        return np.clip(action, -1,1), value
+        return np.clip(action, -1,1)
 
     def learn(self, exp_replay, sample_train=10):
         for exp in range(0, sample_train):
-            state, reward, next_state, done = exp_replay.sample()
-            log_action, action, value = self.ac_target(state)
-            _, _, next_value = self.ac_target(next_state)
+            state, action, reward, next_state, done = exp_replay.sample()
+            value = self.ac_target.critic(state, action)
+            _, next_value = self.ac_target(next_state)
 
-            future_reward = reward + self.gamma*next_value*done
-            advantage = future_reward - value
-            entropy = (log_action * action).mean()
+            q_target = reward + self.gamma*next_value*(1-done)
+            q_expected = self.ac_local.critic(state,action)
+            loss_critic = F.mse_loss(q_expected, q_target)
 
-            loss_actor = (-log_action * advantage).mean()
-            loss_critic = F.mse_loss(future_reward, value)
+            self.optimizer_critic.zero_grad()
+            loss_critic.backward()
+            torch.nn.utils.clip_grad_norm_(self.ac_local.critic.parameters(), 0.8)
+            self.optimizer_critic.step()
 
-            loss = loss_actor + loss_critic*0.5 - 0.0001*entropy
+            action_pred = self.ac_local.actor(state)
+            loss_actor = -self.ac_local.critic(state, action_pred).mean()
 
-            self.optimizer.zero_grad()
-            loss.mean().backward(retain_graph=True)
-            torch.nn.utils.clip_grad_norm_(self.ac_local.parameters(), 0.8)
-            self.optimizer.step()
+            self.optimizer_actor.zero_grad()
+            loss_actor.backward()
+            torch.nn.utils.clip_grad_norm_(self.ac_local.actor.parameters(), 0.8)
+            self.optimizer_actor.step()
 
     def softUpdate(self):
-        for target_param, local_param in zip(self.ac_target.parameters(), self.ac_local.parameters()):
+        if(self.ac_target.fc_common != None):
+            for target_param, local_param in zip(self.ac_target.fc_common.parameters(), self.ac_local.fc_common.parameters()):
+                target_param.data.copy_(self.tau*local_param.data + (1.0-self.tau)*target_param.data)
+        for target_param, local_param in zip(self.ac_target.actor.parameters(), self.ac_local.actor.parameters()):
+            target_param.data.copy_(self.tau*local_param.data + (1.0-self.tau)*target_param.data)
+        for target_param, local_param in zip(self.ac_target.critic.parameters(), self.ac_local.critic.parameters()):
             target_param.data.copy_(self.tau*local_param.data + (1.0-self.tau)*target_param.data)
 
 
