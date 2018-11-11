@@ -46,11 +46,14 @@ class ActorCritic(nn.Module):
         self.critic.critic_first_layer.apply(ActorCritic.init_weights)
         self.actor.fc_actor.apply(ActorCritic.init_weights)
         self.critic.fc_critic.apply(ActorCritic.init_weights)
-        self.std = nn.Parameter(torch.ones(1, action_size))
+
+        self.batchnorm = nn.BatchNorm1d(100)
+
 
     #the forward function is also dependent of the existence of the common layer
     #if it is not present, then the input of both actor and critics are the state
     def forward(self, state):
+        state = self.batchnorm(state)
         if(self.fc_common != None):
             common_res = self.fc_common(state)
         else:
@@ -115,6 +118,6 @@ class Critic(nn.Module):
     def forward(self, common_res, action):
         common_res = self.critic_first_layer(common_res)
         common_res = nn.RReLU(common_res)
-        common_res = torch.cat((common_res.lower, action), dim=0)
+        common_res = torch.cat((common_res.lower, action), dim=1)
         value = self.fc_critic(common_res)
         return value
